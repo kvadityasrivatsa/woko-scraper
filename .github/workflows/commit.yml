@@ -2,8 +2,11 @@ name: WOKO commit-snapshot
 
 on:
   schedule:
-    - cron: '0 0 */14 * *'   # every 14th day at 00:00 UTC
-  workflow_dispatch:          # manual “snapshot now”
+    - cron: '0 0 */14 * *'          # every 14th day
+  workflow_dispatch: {}             # manual “snapshot now”
+
+permissions:
+  contents: write                   # ← NEW
 
 jobs:
   snapshot:
@@ -14,9 +17,7 @@ jobs:
       TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4   # default GITHUB_TOKEN is injected
 
       - uses: actions/setup-python@v5
         with:
@@ -26,7 +27,7 @@ jobs:
       - name: Run scraper & force-commit flag
         run: |
           python woko_scraper.py --csv data/woko_listings.csv --commit-now
-        continue-on-error: true        # we’ll handle commit logic below
+        continue-on-error: true     # scraper code exits 10 when --commit-now
 
       - name: Commit updated CSV (if changed)
         run: |
