@@ -1,35 +1,48 @@
+# .github/workflows/scrape.yml
 name: WOKO scrape (5-min)
 
 on:
-  schedule:         # GitHub's shortest interval
-    - cron: '*/5 * * * *'
-  workflow_dispatch:            # lets you test manually
+  schedule:
+    - cron: '*/5 * * * *'    # every 5 minutes
+  workflow_dispatch:
     inputs:
       fresh_window:
         description: 'Fresh-window (minutes) for alerts'
         default: '5'
         required: false
 
+permissions:
+  contents: write             # ← allow pushes
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
     concurrency:
-      group: woko-scraper      # prevent overlap
+      group: woko-scraper
       cancel-in-progress: true
 
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
-      # allow manual override when workflow_dispatch is used
       TIME_WINDOW_MINUTES: ${{ inputs.fresh_window || '' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4       # default GITHUB_TOKEN injected
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Run scraper (alerts only)
+      - name: Run scraper
         run: python woko_scraper.py --csv data/woko_listings.csv
+
+      - name: Commit updated CSV (if changed)
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add data/woko_listings.csv
+          git diff --cached --quiet && echo "No changes" || (
+            git commit -m 'data: automatic listing update'
+            git push
+          )
