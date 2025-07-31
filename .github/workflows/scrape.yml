@@ -1,0 +1,35 @@
+name: WOKO scrape (5-min)
+
+on:
+  schedule:         # GitHub's shortest interval
+    - cron: '*/5 * * * *'
+  workflow_dispatch:            # lets you test manually
+    inputs:
+      fresh_window:
+        description: 'Fresh-window (minutes) for alerts'
+        default: '5'
+        required: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: woko-scraper      # prevent overlap
+      cancel-in-progress: true
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+      # allow manual override when workflow_dispatch is used
+      TIME_WINDOW_MINUTES: ${{ inputs.fresh_window || '' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Run scraper (alerts only)
+        run: python woko_scraper.py --csv data/woko_listings.csv
