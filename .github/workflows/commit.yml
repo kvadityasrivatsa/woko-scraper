@@ -1,0 +1,39 @@
+name: WOKO commit-snapshot
+
+on:
+  schedule:
+    - cron: '0 0 */14 * *'   # every 14th day at 00:00 UTC
+  workflow_dispatch:          # manual “snapshot now”
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Run scraper & force-commit flag
+        run: |
+          python woko_scraper.py --csv data/woko_listings.csv --commit-now
+        continue-on-error: true        # we’ll handle commit logic below
+
+      - name: Commit updated CSV (if changed)
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add data/woko_listings.csv
+          git diff --cached --quiet && echo "No changes" || (
+            git commit -m 'data: snapshot WOKO listings'
+            git push
+          )
