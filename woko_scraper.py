@@ -1,30 +1,35 @@
 #!/usr/bin/env python3
-"""woko_scraper.py – One-file scraper for WOKO Zürich listings
------------------------------------------------------------------
-Scrapes https://woko.ch/en/zimmer-in-zuerich, appends results to a CSV,
-marks vanished posts *INACTIVE*, and pushes Telegram alerts when a
-**Tenant wanted** post is younger than a configurable *fresh-window*
-(default 5 minutes).
+"""woko_scraper.py – WOKO Zürich listings watcher
 
-Runtime deps: **requests, beautifulsoup4, pandas** (auto-installed).  Safe
-for GitHub Actions every 5 min.
+▸ Scrapes https://woko.ch/en/zimmer-in-zuerich.
+▸ Maintains **woko_listings.csv** (adds new, marks vanished as INACTIVE).
+▸ Sends Telegram alerts for *Tenant wanted* postings newer than a configurable
+  *fresh‑window* (default 5 min, overridable by env‑var or CLI flag).
 
-Environment variables (repo *Secrets & vars → Actions*):
-  ▸ `TELEGRAM_BOT_TOKEN` – Telegram bot token
-  ▸ `TELEGRAM_CHAT_ID`   – chat / channel ID
-  ▸ `TIME_WINDOW_MINUTES` (optional) – override fresh window
+Dependencies (`pip install -q pandas requests beautifulsoup4`) are auto‑installed
+if missing so the script runs identically on local machines, GitHub Actions,
+Kaggle, etc.
 
-CLI examples
-------------
-```bash
-python woko_scraper.py                     # default (5 min)
-TIME_WINDOW_MINUTES=30 python woko_scraper.py --commit-now
-```
+Environment variables (set as GitHub *Secrets & vars → Actions* or locally):
+--------------------------------------------------------------------------
+TELEGRAM_BOT_TOKEN   Telegram bot token (from @BotFather)
+TELEGRAM_CHAT_ID     Chat / channel / user ID to receive alerts
+TIME_WINDOW_MINUTES  Fresh‑window override (integer, optional)
+LOG_LEVEL            Python logging level (INFO, DEBUG…)
+
+CLI usage
+---------
+python woko_scraper.py                    # default behaviour, 5‑min window
+python woko_scraper.py --fresh-window 30  # override via flag
+
+The script **never exits with non‑zero status**, so CI jobs don't fail just
+because the CSV changed.  Git commit/push is handled in the GitHub Workflow.
 """
 from __future__ import annotations
 
-# ── stdlib ──────────────────────────────────────────────────────────────────
+# ── standard lib ─────────────────────────────────────────────────────────────
 import argparse
+import logging
 import os
 import re
 import subprocess
@@ -32,21 +37,20 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
-import logging
 
-# ── lightweight dependency auto-install ─────────────────────────────────────
+# ── on‑the‑fly dependency check / install ───────────────────────────────────
 for _pkg in ("requests", "beautifulsoup4", "pandas"):
     try:
         __import__(_pkg.split("-")[0])
     except ImportError:  # pragma: no cover
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", _pkg])
 
-# ── third-party ──────────────────────────────────────────────────────────────
-import requests  # type: ignore  # noqa: E402
-from bs4 import BeautifulSoup  # type: ignore  # noqa: E402
-import pandas as pd  # type: ignore  # noqa: E402
+# ── third‑party ──────────────────────────────────────────────────────────────
+import requests  # type: ignore
+from bs4 import BeautifulSoup  # type: ignore
+import pandas as pd  # type: ignore
 
-# ── constants & helpers ─────────────────────────────────────────────────────
+# ── constants ────────────────────────────────────────────────────────────────
 URL_OVERVIEW = "https://woko.ch/en/zimmer-in-zuerich"
 HEADERS = {
     "User-Agent": (
@@ -57,25 +61,24 @@ HEADERS = {
 ZURICH_TZ = ZoneInfo("Europe/Zurich")
 UTC = ZoneInfo("UTC")
 
+# ── helpers ──────────────────────────────────────────────────────────────────
+
 def _env_int(name: str, default: int) -> int:
-    """Return integer env var or *default* when unset / blank / invalid."""
+    """Return integer env‑var *name* or *default* when unset / blank / invalid."""
     raw = (os.getenv(name) or "").strip()
     try:
         return int(raw) if raw else default
     except ValueError:
         return default
 
-DEFAULT_FRESH_WINDOW = _env_int("TIME_WINDOW_MINUTES", 5)
-
 logging.basicConfig(
     format="[%(levelname)s] %(message)s",
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
 )
 
-# ── scraping helpers ─────────────────────────────────────────────────────────
+# ── scraping ─────────────────────────────────────────────────────────────────
 
 def _parse_anchor(a) -> dict | None:
-    """Extract listing fields from an <a> tag."""
     href = a.get("href", "")
     m_id = re.search(r"/(\d+)$", href)
     if not m_id:
@@ -91,7 +94,9 @@ def _parse_anchor(a) -> dict | None:
     if not m:
         return None
 
-    local_dt = datetime.strptime(f"{m['date']} {m['time']}", "%d.%m.%Y %H:%M").replace(tzinfo=ZURICH_TZ)
+    local_dt = datetime.strptime(
+        f"{m['date']} {m['time']}", "%d.%m.%Y %H:%M"
+    ).replace(tzinfo=ZURICH_TZ)
 
     return {
         "id": int(m_id.group(1)),
@@ -103,7 +108,7 @@ def _parse_anchor(a) -> dict | None:
     }
 
 
-def scrape() -> pd.DataFrame:
+def scrape_overview() -> pd.DataFrame:
     logging.info("Fetching %s", URL_OVERVIEW)
     resp = requests.get(URL_OVERVIEW, headers=HEADERS, timeout=30)
     resp.raise_for_status()
@@ -113,37 +118,43 @@ def scrape() -> pd.DataFrame:
     logging.info("Scraped %d listings", len(df))
     return df
 
-# ── persistence & diffing ───────────────────────────────────────────────────
+# ── persistence ─────────────────────────────────────────────────────────────
 
-def merge_with_history(new_df: pd.DataFrame, csv_path: Path) -> pd.DataFrame:
+def merge_history(new_df: pd.DataFrame, csv_path: Path) -> pd.DataFrame:
     if csv_path.exists():
         old_df = pd.read_csv(csv_path, dtype={"id": int})
         vanished = old_df[~old_df["id"].isin(new_df["id"])].copy()
         if not vanished.empty:
             vanished["status"] = "INACTIVE"
             new_df = pd.concat([new_df, vanished], ignore_index=True)
-    new_df.sort_values("posted_at", ascending=False, inplace=True)
-    return new_df.reset_index(drop=True)
+    return new_df.sort_values("posted_at", ascending=False).reset_index(drop=True)
 
-# ── notifications ───────────────────────────────────────────────────────────
+
+def save_if_changed(df: pd.DataFrame, path: Path) -> bool:
+    csv_text = df.to_csv(index=False)
+    if path.exists() and path.read_text() == csv_text:
+        logging.info("CSV unchanged – nothing to write")
+        return False
+    path.write_text(csv_text)
+    logging.info("CSV written → %s", path)
+    return True
+
+# ── alerts ──────────────────────────────────────────────────────────────────
 
 def telegram_alerts(df: pd.DataFrame, fresh_minutes: int) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    token, chat_id = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
     if not (token and chat_id):
-        logging.info("Telegram secrets not set – skipping alerts")
+        logging.debug("Telegram secrets not set – skipping alerts")
         return
 
     now = datetime.now(UTC)
-    window_start = now - timedelta(minutes=fresh_minutes)
-    fresh = df[
-        (df["listing_type"] == "Tenant")
-        & (pd.to_datetime(df["posted_at"], utc=True) >= window_start)
-    ]
+    since = now - timedelta(minutes=fresh_minutes)
+    fresh = df[ pd.to_datetime(df["posted_at"], utc=True) >= since ]
+    # fresh = df[(df["listing_type"] == "Tenant") & (pd.to_datetime(df["posted_at"], utc=True) >= since)]
     for _, row in fresh.iterrows():
         msg = (
             "URGENT: NEW RENT POSTING ON WOKO\n\n"
-            f"{row.title}\nPosted: {row.posted_at}\n{row.link}"
+            f"TITLE: {row.title}\nTYPE: {row.listing_type} \nTIMESTAMP: {row.posted_at}\nLINK: {row.link}"
         )
         try:
             requests.post(
@@ -151,42 +162,25 @@ def telegram_alerts(df: pd.DataFrame, fresh_minutes: int) -> None:
                 data={"chat_id": chat_id, "text": msg},
                 timeout=20,
             ).raise_for_status()
-            logging.info("Telegram alert sent for %s", row.id)
+            logging.info("Telegram alert sent for ID %s", row.id)
         except Exception as exc:
             logging.warning("Telegram alert FAILED for %s: %s", row.id, exc)
 
-# ── utilities ───────────────────────────────────────────────────────────────
+# ── CLI ─────────────────────────────────────────────────────────────────────
 
-def _save_if_changed(df: pd.DataFrame, path: Path) -> bool:
-    csv_text = df.to_csv(index=False)
-    if path.exists() and path.read_text() == csv_text:
-        logging.info("CSV identical – no overwrite")
-        return False
-    path.write_text(csv_text)
-    logging.info("CSV saved → %s", path)
-    return True
-
-# ── main entry ──────────────────────────────────────────────────────────────
-
-def cli(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(description="Scrape WOKO listings & maintain CSV history")
-    p.add_argument("--csv", default="woko_listings.csv", type=Path, help="Output CSV path")
-    p.add_argument("--fresh-window", type=int, default=DEFAULT_FRESH_WINDOW, help="Fresh window (minutes) if env var absent")
-    p.add_argument("--commit-now", action="store_true", help="Force git commit regardless of schedule (manual tests)")
+def main(argv: list[str] | None = None) -> None:
+    p = argparse.ArgumentParser(description="Scrape WOKO listings & update CSV history")
+    p.add_argument("--csv", type=Path, default="data/woko_listings.csv", help="Output CSV path (default data/woko_listings.csv)")
+    p.add_argument("--fresh-window", type=int, default=_env_int("TIME_WINDOW_MINUTES", 5), help="Fresh window minutes (default 5 or TIME_WINDOW_MINUTES env)")
     args = p.parse_args(argv)
 
-    fresh_minutes = _env_int("TIME_WINDOW_MINUTES", args.fresh_window)
+    live_df = scrape_overview()
+    combo_df = merge_history(live_df, args.csv)
+    changed = save_if_changed(combo_df, args.csv)
 
-    live_df = scrape()
-    combined_df = merge_with_history(live_df, args.csv)
-    changed = _save_if_changed(combined_df, args.csv)
+    telegram_alerts(live_df, args.fresh_window)
 
-    telegram_alerts(live_df, fresh_minutes)
-
-    # exit codes: 0 = none, 10 = csv changed, 11 = manual commit toggle
-    if args.commit_now:
-        sys.exit(11)
-    sys.exit(10 if changed else 0)
+    logging.info("Done – changed=%s", changed)
 
 if __name__ == "__main__":
-    cli()
+    main()
