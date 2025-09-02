@@ -1,5 +1,6 @@
 id,title,posted_at,listing_type,link,status
-10275,New tenant for a room in Seebach,2025-08-29T10:57:00+00:00,Tenant,https://woko.ch/en/zimmer-in-zuerich-details/10275,ACTIVE
+10275,New tenant for a room in Seebach,2025-08-29T10:57:00+00:00,Tenant,https://woko.ch/en/zimmer-in-zuerich-details/10275,INACTIVE
+10274,Looking for a main tenant from October 1st,2025-08-26T17:49:00+00:00,Tenant,https://woko.ch/en/zimmer-in-zuerich-details/10274,ACTIVE
 10272,"Lagerraum zu vermieten – Bucheggstrasse 4–12, 1. UG 80005",2025-08-22T12:41:00+00:00,Tenant,https://woko.ch/en/zimmer-in-zuerich-details/10272,INACTIVE
 10270,"Lagerraum zu vermieten – Bucheggstrasse 4–12, 2. UG 60004",2025-08-22T12:35:00+00:00,Tenant,https://woko.ch/en/zimmer-in-zuerich-details/10270,INACTIVE
 10269,"Lagerraum zu vermieten – Bucheggstrasse 4–12, 2. UG 40005",2025-08-22T12:28:00+00:00,Tenant,https://woko.ch/en/zimmer-in-zuerich-details/10269,INACTIVE
